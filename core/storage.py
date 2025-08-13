@@ -98,91 +98,92 @@ class DatabaseStorage:
         return inserted
 
     # ------------------------ TENDERS ------------------------
-    def upsert_tenders(self, tenders: List[TenderUnit]) -> Tuple[int, int]:
-        """
-        INSERT ... ON CONFLICT (hash_id) DO UPDATE
-        Aktualizujeme jen pokud se některé pole opravdu změnilo (IS DISTINCT FROM).
-        Vrací (new_count, updated_count).
-        """
-        if not tenders:
-            return 0, 0
+def upsert_tenders(self, tenders: List[TenderUnit]) -> Tuple[int, int]:
+    """
+    INSERT ... ON CONFLICT (source_id, external_id) DO UPDATE
+    Aktualizujeme jen pokud se některé pole opravdu změnilo (IS DISTINCT FROM).
+    Vrací (new_count, updated_count).
+    """
+    if not tenders:
+        return 0, 0
 
-        sql = """
-            INSERT INTO tenders (
-                hash_id, source_id, external_id, title, buyer, cpv,
-                country, region, procedure_type, budget_value, currency,
-                deadline, notice_url, attachments, status, description
-            )
-            VALUES (
-                %(hash_id)s, %(source_id)s, %(external_id)s, %(title)s, %(buyer)s, %(cpv)s,
-                %(country)s, %(region)s, %(procedure_type)s, %(budget_value)s, %(currency)s,
-                %(deadline)s, %(notice_url)s, %(attachments)s, %(status)s, %(description)s
-            )
-            ON CONFLICT (hash_id) DO UPDATE
-            SET
-                title          = EXCLUDED.title,
-                buyer          = EXCLUDED.buyer,
-                cpv            = EXCLUDED.cpv,
-                country        = EXCLUDED.country,
-                region         = EXCLUDED.region,
-                procedure_type = EXCLUDED.procedure_type,
-                budget_value   = EXCLUDED.budget_value,
-                currency       = EXCLUDED.currency,
-                deadline       = EXCLUDED.deadline,
-                notice_url     = EXCLUDED.notice_url,
-                attachments    = EXCLUDED.attachments,
-                status         = EXCLUDED.status,
-                description    = EXCLUDED.description,
-                updated_at     = NOW()
-            WHERE (
-                tenders.title, tenders.buyer, tenders.cpv, tenders.country, tenders.region,
-                tenders.procedure_type, tenders.budget_value, tenders.currency, tenders.deadline,
-                tenders.notice_url, tenders.attachments, tenders.status, tenders.description
-            ) IS DISTINCT FROM (
-                EXCLUDED.title, EXCLUDED.buyer, EXCLUDED.cpv, EXCLUDED.country, EXCLUDED.region,
-                EXCLUDED.procedure_type, EXCLUDED.budget_value, EXCLUDED.currency, EXCLUDED.deadline,
-                EXCLUDED.notice_url, EXCLUDED.attachments, EXCLUDED.status, EXCLUDED.description
-            )
-            RETURNING (xmax = 0) AS inserted, (xmax <> 0) AS updated;
-        """
+    sql = """
+        INSERT INTO tenders (
+            hash_id, source_id, external_id, title, buyer, cpv,
+            country, region, procedure_type, budget_value, currency,
+            deadline, notice_url, attachments, status, description
+        )
+        VALUES (
+            %(hash_id)s, %(source_id)s, %(external_id)s, %(title)s, %(buyer)s, %(cpv)s,
+            %(country)s, %(region)s, %(procedure_type)s, %(budget_value)s, %(currency)s,
+            %(deadline)s, %(notice_url)s, %(attachments)s, %(status)s, %(description)s
+        )
+        ON CONFLICT (source_id, external_id) DO UPDATE
+        SET
+            -- hash_id udržujeme aktuální (neunikátní, jen informační otisk)
+            hash_id        = EXCLUDED.hash_id,
+            title          = EXCLUDED.title,
+            buyer          = EXCLUDED.buyer,
+            cpv            = EXCLUDED.cpv,
+            country        = EXCLUDED.country,
+            region         = EXCLUDED.region,
+            procedure_type = EXCLUDED.procedure_type,
+            budget_value   = EXCLUDED.budget_value,
+            currency       = EXCLUDED.currency,
+            deadline       = EXCLUDED.deadline,
+            notice_url     = EXCLUDED.notice_url,
+            attachments    = EXCLUDED.attachments,
+            status         = EXCLUDED.status,
+            description    = EXCLUDED.description,
+            updated_at     = NOW()
+        WHERE (
+            tenders.title, tenders.buyer, tenders.cpv, tenders.country, tenders.region,
+            tenders.procedure_type, tenders.budget_value, tenders.currency, tenders.deadline,
+            tenders.notice_url, tenders.attachments, tenders.status, tenders.description,
+            tenders.hash_id
+        ) IS DISTINCT FROM (
+            EXCLUDED.title, EXCLUDED.buyer, EXCLUDED.cpv, EXCLUDED.country, EXCLUDED.region,
+            EXCLUDED.procedure_type, EXCLUDED.budget_value, EXCLUDED.currency, EXCLUDED.deadline,
+            EXCLUDED.notice_url, EXCLUDED.attachments, EXCLUDED.status, EXCLUDED.description,
+            EXCLUDED.hash_id
+        )
+        RETURNING (xmax = 0) AS inserted, (xmax <> 0) AS updated;
+    """
 
-        new_count = 0
-        updated_count = 0
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                for t in tenders:
-                    params = {
-                        "hash_id": t.hash_id,
-                        "source_id": t.source_id,
-                        "external_id": t.external_id,
-                        "title": t.title,
-                        "buyer": t.buyer,
-                        "cpv": t.cpv,                     # text[]
-                        "country": t.country,
-                        "region": t.region,
-                        "procedure_type": t.procedure_type,
-                        "budget_value": t.budget_value,
-                        "currency": t.currency,
-                        "deadline": t.deadline,
-                        "notice_url": t.notice_url,
-                        "attachments": Json(t.attachments),  # jsonb
-                        "status": t.status,
-                        "description": t.description,
-                    }
-                    cur.execute(sql, params)
-                    row = cur.fetchone()
-                    if not row:
-                        continue
-                    ins = bool(_get_cell(row, "inserted") if isinstance(row, dict) else _get_cell(row, 0))
-                    upd = bool(_get_cell(row, "updated")  if isinstance(row, dict) else _get_cell(row, 1))
-                    if ins:
+    new_count = 0
+    updated_count = 0
+    with self.get_connection() as conn:
+        with conn.cursor() as cur:
+            for t in tenders:
+                params = {
+                    "hash_id": t.hash_id,
+                    "source_id": t.source_id,
+                    "external_id": t.external_id,
+                    "title": t.title,
+                    "buyer": t.buyer,
+                    "cpv": t.cpv,                     # text[]
+                    "country": t.country,
+                    "region": t.region,
+                    "procedure_type": t.procedure_type,
+                    "budget_value": t.budget_value,
+                    "currency": t.currency,
+                    "deadline": t.deadline,
+                    "notice_url": t.notice_url,
+                    "attachments": Json(t.attachments),  # jsonb
+                    "status": t.status,
+                    "description": t.description,
+                }
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                if row:
+                    if row[0]:
                         new_count += 1
-                    elif upd:
+                    elif row[1]:
                         updated_count += 1
-            conn.commit()
+        conn.commit()
 
-        logger.info(f"Upserted tenders: {new_count} new, {updated_count} updated")
-        return new_count, updated_count
+    logger.info(f"Upserted tenders: {new_count} new, {updated_count} updated")
+    return new_count, updated_count
 
     # ------------------------ Post-ingest sync z RAW ------------------------
     def sync_tenders_from_raw(self) -> int:

@@ -1,85 +1,32 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+// src/pages/TendersPage.tsx
+import React, { useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ExternalLink, Globe, Info, Loader2, LoaderCircle, MapPin, Timer } from "lucide-react";
 import { Drawer } from "vaul";
 
-import { TenderFilters, TenderSort } from "@/types/tender";
-import { useInfiniteTenders, type Tender } from "@/hooks/useTenders";
+import type { Tender } from "@/types/tender";
+import { useInfiniteTenders, type TenderFilters, type TenderSort } from "@/hooks/useTenders";
 import { useFilterStore, type Filters } from "@/lib/store";
 import { cn, formatCZK, parseDeadline } from "@/lib/utils";
 
 export default function TendersPage() {
-  const [filters, setFilters] = useState<TenderFilters>({});
-  const [sort, setSort] = useState<TenderSort>({ field: "created_at", direction: "desc" });
-
-  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, error } =
-    useInfiniteTenders(filters, sort);
-
-  const allTenders = data?.pages.flatMap((page) => page.data) ?? [];
-  const total = data?.pages[0]?.count ?? 0;
-
-  if (isLoading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <LoaderCircle className="h-8 w-8 animate-spin text-blue-600" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="text-center text-red-600 p-4">
-        Chyba při načítání zakázek: {(error as any)?.message ?? String(error)}
-      </div>
-    );
-  }
-
+  // Obal a hlavička (vlastní výpis je v <TendersPage.List />)
   return (
     <div className="px-4 sm:px-0">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Veřejné zakázky</h1>
-        <p className="text-gray-600 mt-1">Nalezeno {total.toLocaleString("cs-CZ")} zakázek</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Filtry – levý panel */}
+        {/* Levý panel – můžeš sem dát statické UI nebo něco jiného */}
         <div className="lg:col-span-1">
           <div className="sticky top-6">
-            <TendersPage.TenderFiltersComponentInline
-              filters={filters}
-              onFiltersChange={setFilters}
-              sort={sort}
-              onSortChange={setSort}
-            />
+            <TendersPage.TenderFiltersComponentInline />
           </div>
         </div>
 
-        {/* Seznam zakázek */}
         <div className="lg:col-span-3">
-          {allTenders.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-gray-500">Nenalezeny žádné zakázky</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {allTenders.map((tender) => (
-                <TendersPage.ItemCard key={tender.hash_id} t={tender} onOpenDetail={() => {}} />
-              ))}
-
-              {hasNextPage && (
-                <div className="flex justify-center pt-6">
-                  <button
-                    onClick={() => fetchNextPage()}
-                    disabled={isFetchingNextPage}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-                  >
-                    {isFetchingNextPage && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                    <span>Načíst další</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+          <TendersPage.List />
         </div>
       </div>
     </div>
@@ -167,123 +114,55 @@ namespace TendersPage {
     );
   }
 
-  // --- Inline panel filtrů pro levou lištu (můžeš později doplnit ovládací prvky) ---
-  export function TenderFiltersComponentInline({
-    filters,
-    onFiltersChange,
-    sort,
-    onSortChange,
-  }: {
-    filters: TenderFilters;
-    onFiltersChange: (f: TenderFilters) => void;
-    sort: TenderSort;
-    onSortChange: (s: TenderSort) => void;
-  }) {
+  // --- Levý inline panel (placeholder) ---
+  export function TenderFiltersComponentInline() {
     return (
       <Card>
         <div className="text-sm text-slate-600 dark:text-slate-400 mb-3">Filtry</div>
-        <div className="text-xs text-slate-500">UI filtrů…</div>
+        <div className="text-xs text-slate-500">Použij tlačítko „Filtry“ nahoře v Listu.</div>
       </Card>
     );
   }
 
-  // --- Client-side filtrování pomocí store Filters ---
-  function normalize(s: string) {
-    return s.trim().toLowerCase();
-  }
-  function parseDateParam(s?: string) {
-    if (!s) return undefined;
-    const [d, m, y] = s.replaceAll(" ", "").split(/[.\-/]/).filter(Boolean).map(Number);
-    if (!y) return undefined;
-    return new Date(y, (m ?? 1) - 1, d ?? 1, 0, 0, 0);
-  }
-  function useClientFiltered(items: Tender[], f: Filters) {
-    return useMemo(() => {
-      let list = items.slice();
-
-      if (f.statuses.length) {
-        list = list.filter((t) => t.detail?.status && f.statuses.includes(normalize(t.detail.status)));
-      }
-      if (f.regions.length) {
-        list = list.filter((t) => t.detail?.region && f.regions.includes(normalize(t.detail.region)));
-      }
-      if (f.cpv.length) {
-        list = list.filter((t) => {
-          const arr = t.detail?.cpv || [];
-          return f.cpv.some((code) => arr.some((c) => c.startsWith(code)));
-        });
-      }
-      if (f.budgetMin != null) {
-        list = list.filter((t) => (t.detail?.budget_value ?? -Infinity) >= (f.budgetMin as number));
-      }
-      if (f.budgetMax != null) {
-        list = list.filter((t) => (t.detail?.budget_value ?? Infinity) <= (f.budgetMax as number));
-      }
-      if (f.deadlineFrom) {
-        const from = parseDateParam(f.deadlineFrom);
-        if (from)
-          list = list.filter((t) => {
-            const d = parseDeadline(t.deadline);
-            return d ? d >= from : true;
-          });
-      }
-      if (f.deadlineTo) {
-        const to = parseDateParam(f.deadlineTo);
-        if (to)
-          list = list.filter((t) => {
-            const d = parseDeadline(t.deadline);
-            return d ? d <= to : true;
-          });
-      }
-
-      if (f.sort === "deadlineAsc" || f.sort === "deadlineDesc") {
-        list.sort((a, b) => {
-          const da = parseDeadline(a.deadline)?.getTime() ?? Number.POSITIVE_INFINITY;
-          const db = parseDeadline(b.deadline)?.getTime() ?? Number.POSITIVE_INFINITY;
-          return f.sort === "deadlineAsc" ? da - db : db - da;
-        });
-      } else if (f.sort === "budgetAsc" || f.sort === "budgetDesc") {
-        list.sort((a, b) => {
-          const aa = a.detail?.budget_value ?? -1;
-          const bb = b.detail?.budget_value ?? -1;
-          return f.sort === "budgetAsc" ? aa - bb : bb - aa;
-        });
-      }
-
-      return list;
-    }, [items, f]);
-  }
-
-  // --- Karta položky v seznamu ---
+  // --- Karta položky v seznamu (s fallbacky na top-level) ---
   export function ItemCard({ t, onOpenDetail }: { t: Tender; onOpenDetail: () => void }) {
+    const status   = (t as any).status ?? (t as any).detail?.status;
+    const region   = (t as any).region ?? (t as any).detail?.region;
+    const cpvArr   = ((t as any).cpv ?? (t as any).detail?.cpv ?? []) as string[];
+    const budget   = (t as any).budget_value ?? (t as any).detail?.budget_value ?? null;
+    const deadline = (t as any).deadline ?? (t as any).detail?.deadline ?? null;
+
     return (
       <Card>
         <h3 className="font-semibold text-lg leading-tight mb-1">{t.title}</h3>
         <div className="text-sm text-slate-600 dark:text-slate-400 mb-2">{t.buyer}</div>
+
         <div className="flex flex-wrap gap-2 mb-3">
-          {t.detail?.status && (
+          {status && (
             <Badge>
-              <Info className="h-3 w-3 mr-1" /> {t.detail.status}
+              <Info className="h-3 w-3 mr-1" /> {status}
             </Badge>
           )}
-          {t.detail?.region && (
+          {region && (
             <Badge>
-              <MapPin className="h-3 w-3 mr-1" /> {t.detail.region}
+              <MapPin className="h-3 w-3 mr-1" /> {region}
             </Badge>
           )}
-          {t.country && (
+          {(t as any).country && (
             <Badge>
-              <Globe className="h-3 w-3 mr-1" /> {t.country}
+              <Globe className="h-3 w-3 mr-1" /> {(t as any).country}
             </Badge>
           )}
         </div>
+
         <div className="text-sm grid grid-cols-2 gap-2 mb-3">
-          <div>CPV: {(t.detail?.cpv || []).slice(0, 3).join(", ") || "—"}</div>
-          <div>Rozpočet: {formatCZK(t.detail?.budget_value ?? null)}</div>
+          <div>CPV: {cpvArr.slice(0, 3).join(", ") || "—"}</div>
+          <div>Rozpočet: {formatCZK(budget)}</div>
           <div className="col-span-2 flex items-center">
-            <Timer className="h-4 w-4 mr-1" /> Deadline: {t.deadline || "—"}
+            <Timer className="h-4 w-4 mr-1" /> Deadline: {deadline || "—"}
           </div>
         </div>
+
         <div className="flex gap-2">
           <button
             onClick={onOpenDetail}
@@ -291,9 +170,9 @@ namespace TendersPage {
           >
             Otevřít detail
           </button>
-          {t.notice_url && (
+          {(t as any).notice_url && (
             <a
-              href={t.notice_url}
+              href={(t as any).notice_url}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center justify-center rounded-md border border-slate-300 dark:border-slate-700 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
@@ -311,7 +190,12 @@ namespace TendersPage {
     const location = useLocation();
     const navigate = useNavigate();
 
-    const { q, syncFromUrl, syncToUrl, sheetOpen, openSheet, sort, set } = useFilterStore();
+    // reaktivní hodnoty store
+    const {
+      q,
+      statuses, regions, cpv, budgetMin, budgetMax, deadlineFrom, deadlineTo,
+      sort, set, syncFromUrl, syncToUrl, sheetOpen, openSheet
+    } = useFilterStore();
 
     // načtení z URL jen 1×
     useEffect(() => {
@@ -319,16 +203,44 @@ namespace TendersPage {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // sync URL při změně vyhledávání/řazení
+    // sync URL při změně hodnot
     useEffect(() => {
       syncToUrl();
-    }, [q, sort, syncToUrl]);
+    }, [q, sort, statuses, regions, cpv, budgetMin, budgetMax, deadlineFrom, deadlineTo, syncToUrl]);
 
-    // data + nekonečné načítání
-    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status } = useInfiniteTenders(q);
-    const allItems = useMemo(() => (data?.pages || []).flat(), [data?.pages]);
+    // mapování UI sort -> server sort
+    const serverSort: TenderSort =
+      sort === "deadlineAsc"   ? { field: "deadline",      direction: "asc"  } :
+      sort === "deadlineDesc"  ? { field: "deadline",      direction: "desc" } :
+      sort === "budgetAsc"     ? { field: "budget_value",  direction: "asc"  } :
+      sort === "budgetDesc"    ? { field: "budget_value",  direction: "desc" } :
+                                 { field: "created_at",    direction: "desc" }; // newest
 
-    const filtered = useClientFiltered(allItems, useFilterStore.getState());
+    // filtry pro server
+    const serverFilters: TenderFilters = {
+      q,
+      statuses, regions, cpv,
+      budgetMin, budgetMax,
+      deadlineFrom, deadlineTo,
+    };
+
+    // server-side dotaz + stránkování
+    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status } =
+      useInfiniteTenders(serverFilters, serverSort);
+
+    const allItems = useMemo(() => (data?.pages || []).flatMap((p) => p.data), [data?.pages]);
+    const total = data?.pages?.[0]?.count ?? 0;
+
+    // ⚠️ Když řadíme podle rozpočtu, vyřadíme záznamy s NULL rozpočtem (nechceme je v tomto režimu)
+    const itemsToRender = useMemo(() => {
+      if (sort === "budgetAsc" || sort === "budgetDesc") {
+        return allItems.filter((t) => {
+          const budget = (t as any).budget_value ?? (t as any).detail?.budget_value ?? null;
+          return budget != null && !isNaN(budget);
+        });
+      }
+      return allItems;
+    }, [allItems, sort]);
 
     const sentinelRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
@@ -336,9 +248,7 @@ namespace TendersPage {
       const el = sentinelRef.current;
       const io = new IntersectionObserver(
         (e) => {
-          if (e[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
-            fetchNextPage();
-          }
+          if (e[0].isIntersecting && hasNextPage && !isFetchingNextPage) fetchNextPage();
         },
         { rootMargin: "800px 0px" }
       );
@@ -363,7 +273,7 @@ namespace TendersPage {
 
           <div className="text-sm text-slate-500">
             {status === "pending" && "Načítám…"}
-            {status === "success" && `${filtered.length} záznamů`}
+            {status === "success" && `${total.toLocaleString("cs-CZ")} záznamů`}
           </div>
 
           <div className="flex-1" />
@@ -376,9 +286,10 @@ namespace TendersPage {
           </button>
         </div>
 
+        {/* Výpis karet */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {status === "pending" && Array.from({ length: 9 }).map((_, i) => <SkeletonCard key={i} />)}
-          {filtered.map((t) => (
+          {itemsToRender.map((t) => (
             <ItemCard
               key={t.external_id}
               t={t}
@@ -398,28 +309,22 @@ namespace TendersPage {
         )}
 
         {/* Levý šuplík s filtry */}
-        <FiltersSheet
-          open={sheetOpen}
-          onOpenChange={(o) => {
-            useFilterStore.getState().openSheet(o);
-            if (!o) useFilterStore.getState().syncToUrl();
-          }}
-        />
+        <FiltersSheet />
       </>
     );
   }
 
   // --- Šuplík filtrů (vaul) ---
-  function FiltersSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-    const { statuses, regions, cpv, budgetMin, budgetMax, deadlineFrom, deadlineTo, set } = useFilterStore();
+  function FiltersSheet() {
+    const { sheetOpen, openSheet, statuses, regions, cpv, budgetMin, budgetMax, deadlineFrom, deadlineTo, set, syncToUrl } = useFilterStore();
 
     const onApply = () => {
-      useFilterStore.getState().syncToUrl();
-      onOpenChange(false);
+      syncToUrl();
+      openSheet(false);
     };
 
     return (
-      <Drawer.Root open={open} onOpenChange={onOpenChange} direction="left">
+      <Drawer.Root open={sheetOpen} onOpenChange={(o) => openSheet(o)} direction="left">
         <Drawer.Overlay className="fixed inset-0 bg-black/40 z-40" />
         <Drawer.Content className="fixed z-50 top-0 left-0 h-full w-[92%] sm:w-[420px] bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 p-4 overflow-auto">
           <div className="max-w-full space-y-4">

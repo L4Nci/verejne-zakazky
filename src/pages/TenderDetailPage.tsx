@@ -7,15 +7,22 @@ import { cn, formatCZK } from "@/lib/utils";
 export default function TenderDetailPage() {
   const navigate = useNavigate();
   const { external_id } = useParams<{ external_id: string }>();
-
-  // ID z URL může obsahovat lomítka => je potřeba dekódovat
   const decodedId = external_id ? decodeURIComponent(external_id) : undefined;
 
   const detail = useTenderDetail(decodedId);
 
   useEffect(() => {
-    // případný "nenalezeno" stav řešíme v renderu níže
+    // necháme případné "nenalezeno" zobrazit v UI
   }, [detail.isLoading, detail.data]);
+
+  // Pomocné fallbacky – nejdřív zkusíme v detailu, pak top-level
+  const d = detail.data;
+  const vStatus   = d?.detail?.status ?? d?.status ?? "—";
+  const vRegion   = d?.detail?.region ?? d?.region ?? "—";
+  const vCountry  = d?.country ?? "—";
+  const vBudget   = formatCZK(d?.detail?.budget_value ?? (d as any)?.budget_value ?? null);
+  const vCPV      = (d?.detail?.cpv ?? (d as any)?.cpv ?? []).join(", ") || "—";
+  const vDeadline = d?.deadline ?? (d as any)?.deadline ?? "—";
 
   return (
     <div className="container mx-auto px-4 py-6 md:py-8">
@@ -40,44 +47,39 @@ export default function TenderDetailPage() {
         <div className="text-slate-500">Zakázka nebyla nalezena.</div>
       )}
 
-      {!detail.isLoading && detail.data && (
+      {!detail.isLoading && d && (
         <article className="space-y-6">
           <header className="space-y-2">
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight leading-snug">
-              {detail.data.title}
+              {d.title}
             </h1>
             <div className="text-sm text-slate-600 dark:text-slate-400">
-              {detail.data.buyer || "—"}
+              {d.buyer || "—"}
             </div>
           </header>
 
           <section className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-            <InfoRow label="Status" value={detail.data.detail?.status} icon={<Info className="h-4 w-4" />} />
-            <InfoRow label="Region" value={detail.data.detail?.region} icon={<MapPin className="h-4 w-4" />} />
-            <InfoRow label="Země" value={detail.data.country} icon={<Globe className="h-4 w-4" />} />
-            <InfoRow label="Rozpočet" value={formatCZK(detail.data.detail?.budget_value ?? null)} />
-            <InfoRow label="CPV" value={(detail.data.detail?.cpv || []).join(", ") || "—"} />
-            <InfoRow label="Deadline" value={detail.data.deadline || "—"} icon={<Timer className="h-4 w-4" />} />
-            <InfoRow label="Externí ID" value={detail.data.external_id} />
+            <InfoRow label="Status"   value={vStatus}   icon={<Info className="h-4 w-4" />} />
+            <InfoRow label="Region"   value={vRegion}   icon={<MapPin className="h-4 w-4" />} />
+            <InfoRow label="Země"     value={vCountry}  icon={<Globe className="h-4 w-4" />} />
+            <InfoRow label="Rozpočet" value={vBudget} />
+            <InfoRow label="CPV"      value={vCPV} />
+            <InfoRow label="Deadline" value={vDeadline} icon={<Timer className="h-4 w-4" />} />
+            <InfoRow label="Externí ID" value={d.external_id} />
           </section>
 
           <section className="prose prose-sm dark:prose-invert max-w-none">
             <h2>Popis</h2>
-            <p>{detail.data.detail?.description || "—"}</p>
+            <p>{d.detail?.description || (d as any)?.description || "—"}</p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold mb-2">Přílohy</h2>
             <ul className="space-y-1">
-              {(detail.data.detail?.attachments || []).length > 0 ? (
-                detail.data.detail!.attachments!.map((a, i) => (
+              {(d.detail?.attachments || (d as any)?.attachments || []).length > 0 ? (
+                (d.detail?.attachments ?? (d as any)?.attachments ?? []).map((a: any, i: number) => (
                   <li key={i}>
-                    <a
-                      className="inline-flex items-center text-blue-600 hover:underline"
-                      href={a.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
+                    <a className="inline-flex items-center text-blue-600 hover:underline" href={a.url} target="_blank" rel="noreferrer">
                       <FileText className="h-4 w-4 mr-2" /> {a.name}
                     </a>
                   </li>
@@ -88,10 +90,10 @@ export default function TenderDetailPage() {
             </ul>
           </section>
 
-          {detail.data.notice_url && (
+          {d.notice_url && (
             <div>
               <a
-                href={detail.data.notice_url}
+                href={d.notice_url}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center rounded-md border border-slate-300 dark:border-slate-700 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"

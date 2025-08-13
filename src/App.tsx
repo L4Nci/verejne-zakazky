@@ -3,6 +3,8 @@ import { Moon, Sun, SlidersHorizontal } from "lucide-react";
 import TendersPage from "@/pages/TendersPage";
 import { useEffect } from "react";
 import { useThemeStore } from "@/lib/store";
+import TenderDetailPage from "@/pages/TenderDetailPage";
+
 
 export default function App() {
   const { theme, toggleTheme, applyThemeClass } = useThemeStore();
@@ -64,7 +66,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/tenders" replace />} />
             <Route path="/tenders" element={<TendersPage.List />} />
-            <Route path="/t/:external_id" element={<TendersPage.List />} />
+            <Route path="/t/:external_id" element={<TenderDetailPage />} />
           </Routes>
         </div>
       </main>

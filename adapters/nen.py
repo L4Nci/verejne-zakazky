@@ -6,7 +6,6 @@ import re
 from itertools import zip_longest
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
-from decimal import Decimal, InvalidOperation
 from datetime import datetime, date
 
 from loguru import logger
@@ -16,6 +15,7 @@ from bs4.element import Tag, NavigableString
 from adapters.base import BaseAdapter
 from core.models import RawRecord, TenderUnit, ScrapingResult
 from core.fetcher import HttpFetcher
+from core.normalize import normalize_money, normalize_status, detect_currency, parse_decimal
 
 BASE = "https://nen.nipez.cz"
 
@@ -38,27 +38,6 @@ def parse_deadline_to_date(text: Optional[str]) -> Optional[date]:
             continue
     return None
 
-def _parse_money_and_currency(text: str) -> Tuple[Optional[float], Optional[str]]:
-    if not text:
-        return None, None
-    cur = None
-    if re.search(r"\b(CZK|Kč|koruna\s+česká)\b", text, re.I):
-        cur = "CZK"
-    elif re.search(r"\b(EUR|€|euro)\b", text, re.I):
-        cur = "EUR"
-    txt = text.replace("\xa0", " ").strip()
-    m = re.search(r"([\d .\u00A0]+)([,\.]\d{1,2})?", txt)
-    val = None
-    if m:
-        intpart = re.sub(r"[ .\u00A0]", "", m.group(1))
-        frac = m.group(2) or ""
-        num = intpart + (frac.replace(",", ".") if frac else "")
-        try:
-            val = float(Decimal(num))
-        except (InvalidOperation, ValueError):
-            val = None
-    return val, cur
-
 def _first_match(kv: Dict[str, str], patterns: List[str]) -> Optional[str]:
     for pat in patterns:
         r = re.compile(pat, re.I)
@@ -75,23 +54,27 @@ def _val_after_label(soup: BeautifulSoup, label_patterns: List[str]) -> Optional
         parent = el.parent if isinstance(el.parent, Tag) else None
         if not parent:
             continue
+        # th -> td
         if parent.name in ("th", "label"):
             td = parent.find_next("td")
             if td:
                 t = _norm(td.get_text(" ", strip=True))
                 if t:
                     return t
+        # dt -> dd
         if parent.name == "dt":
             dd = parent.find_next("dd")
             if dd:
                 t = _norm(dd.get_text(" ", strip=True))
                 if t:
                     return t
+        # sourozenec
         for sib in parent.next_siblings:
             if isinstance(sib, Tag):
                 t = _norm(sib.get_text(" ", strip=True))
                 if t:
                     return t
+        # nouze
         nxt = el.find_next(string=True)
         if isinstance(nxt, str):
             t = _norm(nxt)
@@ -101,7 +84,6 @@ def _val_after_label(soup: BeautifulSoup, label_patterns: List[str]) -> Optional
 
 def extract_label_values(soup: BeautifulSoup) -> Dict[str, str]:
     kv: Dict[str, str] = {}
-
     # tabulky
     for tr in soup.find_all("tr"):
         th = tr.find("th")
@@ -111,8 +93,7 @@ def extract_label_values(soup: BeautifulSoup) -> Dict[str, str]:
             v = _norm(td.get_text(" ", strip=True))
             if k and v:
                 kv[k] = v
-
-    # definition lists
+    # dl
     for dl in soup.find_all("dl"):
         dts = dl.find_all("dt")
         dds = dl.find_all("dd")
@@ -122,8 +103,7 @@ def extract_label_values(soup: BeautifulSoup) -> Dict[str, str]:
                 v = _norm(dd.get_text(" ", strip=True))
                 if k and v:
                     kv[k] = v
-
-    # heuristika label -> soused
+    # heuristika label → sousední div/span
     label_like = soup.find_all(True, string=re.compile(r".+"))
     for ns in label_like:
         if not isinstance(ns, NavigableString):
@@ -156,9 +136,16 @@ class NENAdapter(BaseAdapter):
         self.user_agent: str = self.config.get("user_agent", "vz-aggregator/0.1 (+contact@example.com)")
         self.max_detail_per_run: int = int(self.config.get("max_detail_per_run", 150))
         self.detail_log_every: int = int(self.config.get("detail_log_every", 10))
-        self.fetcher = HttpFetcher(delay_min=self.delay_min, delay_max=self.delay_max)
+        self.fetcher = HttpFetcher(
+            delay_min=self.delay_min,
+            delay_max=self.delay_max,
+            user_agent=self.user_agent,
+            max_retries=int(self.config.get("max_retries", 3)),
+            backoff_base=float(self.config.get("backoff_base", 0.6)),
+        )
 
-    # --- list helpers ---
+    # --- list helpers ---------------------------------------------------------
+
     def _page_url(self, n: int) -> str:
         return f"{BASE}/verejne-zakazky" if n == 1 else f"{BASE}/verejne-zakazky/p:vz:page={n}"
 
@@ -184,7 +171,8 @@ class NENAdapter(BaseAdapter):
                 return urljoin(BASE, href)
         return None
 
-    # --- list parsing ---
+    # --- list parsing ---------------------------------------------------------
+
     def parse_tender_list(self, html: str) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "lxml")
         table = soup.select_one("table.gov-table")
@@ -214,7 +202,26 @@ class NENAdapter(BaseAdapter):
             })
         return rows
 
-    # --- detail parsing ---
+    # --- detail parsing -------------------------------------------------------
+
+    def _extract_budget_block(self, soup: BeautifulSoup) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Primárně hledej přes 'gov-grid-tile' s div[title~="Předpokládaná hodnota (bez DPH)"].
+        Vrací (text_hodnoty, text_meny_hint).
+        """
+        tile = soup.select_one('div.gov-grid-tile[title*="Předpokládaná hodnota"]')
+        if tile:
+            p = tile.select_one("p.text.gov-note")
+            if p:
+                value_text = p.get("title") or p.get_text(" ", strip=True)
+                # měna může být v sousedním 'Měna' tilu
+                currency_tile = soup.select_one('div.gov-grid-tile[title*="Měna"]')
+                currency_hint = None
+                if currency_tile:
+                    currency_hint = currency_tile.get_text(" ", strip=True)
+                return value_text, currency_hint
+        return None, None
+
     def fetch_tender_detail(self, url: str) -> Dict[str, Any]:
         if not url:
             return {}
@@ -240,30 +247,27 @@ class NENAdapter(BaseAdapter):
             region = _val_after_label(soup, ["Hlavní místo plnění", "Místo plnění", r"\bRegion\b", "Místo realizace"])
         out["region"] = region
 
-        # status
-        status = _first_match(kv, ["Aktuální stav ZP", r"\bStav zakázky\b", r"^\s*Stav\s*$"])
-        if not status:
-            status = _val_after_label(soup, ["Aktuální stav ZP", r"\bStav zakázky\b", r"^\s*Stav\s*$"])
-        if status:
-            status = re.sub(r"^\s*(Aktuální stav ZP|Stav zakázky|Stav)\s*[:\-]\s*", "", status, flags=re.I)
-        out["status"] = status
+        # status (normalized + raw)
+        status_raw = _first_match(kv, ["Aktuální stav ZP", r"\bStav zakázky\b", r"^\s*Stav\s*$"]) \
+                     or _val_after_label(soup, ["Aktuální stav ZP", r"\bStav zakázky\b", r"^\s*Stav\s*$"])
+        norm_status, orig_status = normalize_status(status_raw)
+        out["status"] = orig_status or status_raw  # ukládáme původní label; norm můžeme doplnit později do schématu
 
         # description
-        descr = _first_match(kv, ["Popis předmětu", "Předmět zakázky", "Stručný popis", r"^\s*Popis\s*$"])
-        if not descr:
-            descr = _val_after_label(soup, ["Popis předmětu", "Předmět zakázky", "Stručný popis", r"^\s*Popis\s*$"])
+        descr = _first_match(kv, ["Popis předmětu", "Předmět zakázky", "Stručný popis", r"^\s*Popis\s*$"]) \
+                or _val_after_label(soup, ["Popis předmětu", "Předmět zakázky", "Stručný popis", r"^\s*Popis\s*$"])
         if not descr:
             meta = soup.find("meta", attrs={"name": "description"})
             if meta and meta.get("content"):
                 descr = _norm(meta["content"])
         if descr:
             descr = re.sub(r"^\s*(Popis předmětu|Předmět zakázky|Stručný popis|Popis)\s*[:\-]\s*", "", descr, flags=re.I)
-            cut_at = re.search(r"\b(Základní\s+informace)\b", descr, flags=re.I)
+            cut_at = re.search(r"\b(Základní informace|Základní\s+informace)\b", descr, flags=re.I)
             if cut_at:
                 descr = descr[:cut_at.start()].strip()
         out["description"] = descr
 
-        # CPV
+        # cpv
         cpv_v = _first_match(kv, [r"Kód.*CPV", r"\bCPV\b"])
         if cpv_v:
             found = re.findall(r"\d{8}", cpv_v)
@@ -278,52 +282,18 @@ class NENAdapter(BaseAdapter):
         # procedure type
         out["procedure_type"] = _first_match(kv, ["Druh řízení", "Typ řízení", "Způsob zadání", "Druh zadávacího řízení"])
 
-        # === Předpokládaná hodnota (bez DPH) – přes „dlaždici“ ===
-        budget_tile = None
-        for tile in soup.select("div.gov-grid-tile"):
-            h3 = tile.select_one("h3.gov-title--delta")
-            if not h3:
-                continue
-            if re.search(r"^Předpokládaná hodnota\s*\(bez\s*DPH\)$", h3.get_text(strip=True), re.I):
-                budget_tile = tile
-                break
-
-        if budget_tile:
-            p = budget_tile.select_one("p.text.gov-note")
-            if p:
-                raw_amount = p.get("title") or p.get_text(" ", strip=True)
-                raw_amount = (raw_amount or "").replace("\xa0", " ").strip()
-                val, _ = _parse_money_and_currency(raw_amount)
-                if val is not None:
-                    out["budget_value"] = val
-                    out["currency"] = "CZK"  # NEN: v praxi Kč
-        else:
-            money_block = _first_match(kv, [r"Předpokládaná hodnota", r"Odhadovaná hodnota", r"^\s*Cena\s*$", r"Rozpočet"])
-            if money_block:
-                val, cur = _parse_money_and_currency(money_block)
-                if val is not None:
-                    out["budget_value"] = val
-                if cur:
-                    out["currency"] = cur
-
-        # dlaždice „Měna“ pro jistotu
+        # budget + currency (NOVÝ přes dlaždici + fallbacky)
+        val_text, currency_hint = self._extract_budget_block(soup)
+        if not val_text:
+            # fallback: hledání podle labelů
+            val_text = _first_match(kv, [r"Předpokládaná hodnota", r"Odhadovaná hodnota", r"^\s*Cena\s*$", r"Rozpočet"])
+        val, cur = normalize_money(val_text, currency_hint or _first_match(kv, [r"^\s*Měna\s*$", r"\bMěna\b"]))
+        if val is not None:
+            out["budget_value"] = float(val)  # do DB posíláme float (schéma má numeric/float)
+        if cur:
+            out["currency"] = cur
         if not out["currency"]:
-            currency_tile = None
-            for tile in soup.select("div.gov-grid-tile"):
-                h3 = tile.select_one("h3.gov-title--delta")
-                if h3 and re.search(r"^\s*Měna\s*$", h3.get_text(strip=True), re.I):
-                    currency_tile = tile
-                    break
-            if currency_tile:
-                p = currency_tile.select_one("p.text.gov-note")
-                if p:
-                    txt = (p.get("title") or p.get_text(" ", strip=True) or "").lower()
-                    if "eur" in txt or "euro" in txt:
-                        out["currency"] = "EUR"
-                    elif "czk" in txt or "kč" in txt or "koruna" in txt:
-                        out["currency"] = "CZK"
-
-        if not out["currency"]:
+            # NEN je převážně CZK – ale ponecháme to jen jako fallback
             out["currency"] = "CZK"
 
         # attachments
@@ -343,7 +313,8 @@ class NENAdapter(BaseAdapter):
         out["_detail_html_len"] = len(html)
         return out
 
-    # --- normalize ---
+    # --- normalize to TenderUnit ---------------------------------------------
+
     def normalize_tender(self, raw: Dict[str, Any]) -> TenderUnit:
         notice = raw.get("notice_url")
         ext = str(raw.get("external_id") or "")
@@ -370,12 +341,14 @@ class NENAdapter(BaseAdapter):
             hash_id=hash_id,
         )
 
-    # --- main fetch ---
+    # --- main fetch -----------------------------------------------------------
+
     def fetch_tenders(self) -> ScrapingResult:
         page = 1
         url = self._page_url(page)
         pages_scraped = 0
         errors: List[str] = []
+
         raw_records: List[RawRecord] = []
         tender_units: List[TenderUnit] = []
         details_fetched = 0
@@ -396,8 +369,8 @@ class NENAdapter(BaseAdapter):
                             detail = self.fetch_tender_detail(r["notice_url"])
                             details_fetched += 1
                             if details_fetched % self.detail_log_every == 0 or details_fetched == 1:
-                                have_keys = [k for k in ("cpv","procedure_type","budget_value","attachments","region","status","description") if detail.get(k)]
-                                logger.info(f"[NEN] Detail {details_fetched}/{self.max_detail_per_run} ({r.get('external_id')}): {', '.join(have_keys) or 'empty'}")
+                                have = [k for k in ("cpv","procedure_type","budget_value","attachments","region","status","description") if detail.get(k)]
+                                logger.info(f"[NEN] Detail {details_fetched}/{self.max_detail_per_run} ({r.get('external_id')}): {', '.join(have) or 'empty'}")
                         except Exception as e:
                             logger.warning(f"[NEN] Detail error for {r.get('external_id')}: {type(e).__name__}: {e}")
                             errors.append(f"detail error: {e}")

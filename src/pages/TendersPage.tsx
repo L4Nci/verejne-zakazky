@@ -1,25 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ExternalLink, FileText, Globe, Info, Loader2, LoaderCircle, MapPin, Timer } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { ExternalLink, Globe, Info, Loader2, LoaderCircle, MapPin, Timer } from "lucide-react";
 import { Drawer } from "vaul";
 
 import { TenderFilters, TenderSort } from "@/types/tender";
-import { useInfiniteTenders, useTenderDetail, type Tender } from "@/hooks/useTenders";
+import { useInfiniteTenders, type Tender } from "@/hooks/useTenders";
 import { useFilterStore, type Filters } from "@/lib/store";
 import { cn, formatCZK, parseDeadline } from "@/lib/utils";
 
-export function TendersPage() {
+export default function TendersPage() {
   const [filters, setFilters] = useState<TenderFilters>({});
   const [sort, setSort] = useState<TenderSort>({ field: "created_at", direction: "desc" });
 
-  const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-    isLoading,
-    error,
-  } = useInfiniteTenders(filters, sort);
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, error } =
+    useInfiniteTenders(filters, sort);
 
   const allTenders = data?.pages.flatMap((page) => page.data) ?? [];
   const total = data?.pages[0]?.count ?? 0;
@@ -93,7 +87,7 @@ export function TendersPage() {
 }
 
 /**
- * Namespace s podsložkami používanými v App.tsx: SearchBox, FiltersButton, List, atd.
+ * Namespace s podsložkami používanými v App.tsx: SearchBox, FiltersButton, List
  */
 namespace TendersPage {
   // --- UI pomocníci ---
@@ -173,7 +167,7 @@ namespace TendersPage {
     );
   }
 
-  // --- Inline panel filtrů pro levou lištu v této stránce (nepoužívá App.tsx) ---
+  // --- Inline panel filtrů pro levou lištu (můžeš později doplnit ovládací prvky) ---
   export function TenderFiltersComponentInline({
     filters,
     onFiltersChange,
@@ -188,7 +182,6 @@ namespace TendersPage {
     return (
       <Card>
         <div className="text-sm text-slate-600 dark:text-slate-400 mb-3">Filtry</div>
-        {/* Zde můžeš doplnit skutečné ovládací prvky pro filters/sort */}
         <div className="text-xs text-slate-500">UI filtrů…</div>
       </Card>
     );
@@ -261,7 +254,7 @@ namespace TendersPage {
     }, [items, f]);
   }
 
-  // --- Karta položky v seznamu (v této stránce) ---
+  // --- Karta položky v seznamu ---
   export function ItemCard({ t, onOpenDetail }: { t: Tender; onOpenDetail: () => void }) {
     return (
       <Card>
@@ -313,11 +306,10 @@ namespace TendersPage {
     );
   }
 
-  // --- Hlavní seznam s nekonečným posunem a šuplíky (App.tsx -> <TendersPage.List />) ---
+  // --- Hlavní seznam (App.tsx -> <TendersPage.List />) ---
   export function List() {
     const location = useLocation();
     const navigate = useNavigate();
-    const params = useParams<{ external_id: string }>();
 
     const { q, syncFromUrl, syncToUrl, sheetOpen, openSheet, sort, set } = useFilterStore();
 
@@ -354,14 +346,6 @@ namespace TendersPage {
       return () => io.disconnect();
     }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-    // detail vpravo podle :external_id
-    const detailId = params.external_id;
-    const detail = useTenderDetail(detailId);
-
-    useEffect(() => {
-      openSheet(!!detailId);
-    }, [detailId, openSheet]);
-
     return (
       <>
         <div className="flex items-center gap-2 mb-4">
@@ -395,7 +379,14 @@ namespace TendersPage {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {status === "pending" && Array.from({ length: 9 }).map((_, i) => <SkeletonCard key={i} />)}
           {filtered.map((t) => (
-            <ItemCard key={t.external_id} t={t} onOpenDetail={() => navigate(`/t/${t.external_id}${location.search}`)} />
+            <ItemCard
+              key={t.external_id}
+              t={t}
+              onOpenDetail={() => {
+                const id = encodeURIComponent(t.external_id); // kvůli lomítkům v ID
+                navigate(`/t/${id}${location.search}`);
+              }}
+            />
           ))}
         </div>
 
@@ -413,16 +404,6 @@ namespace TendersPage {
             useFilterStore.getState().openSheet(o);
             if (!o) useFilterStore.getState().syncToUrl();
           }}
-        />
-
-        {/* Pravý šuplík s detailem */}
-        <DetailSheet
-          open={!!detailId}
-          onOpenChange={(o) => {
-            if (!o) navigate(`/tenders${location.search}`, { replace: true });
-          }}
-          t={detail.data}
-          isLoading={detail.isLoading}
         />
       </>
     );
@@ -540,7 +521,10 @@ namespace TendersPage {
             </div>
 
             <div className="pt-2 flex gap-2">
-              <button className="inline-flex items-center justify-center rounded-md bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-3 py-2 text-sm" onClick={onApply}>
+              <button
+                className="inline-flex items-center justify-center rounded-md bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-3 py-2 text-sm"
+                onClick={onApply}
+              >
                 Aplikovat
               </button>
               <button
@@ -555,87 +539,4 @@ namespace TendersPage {
       </Drawer.Root>
     );
   }
-
-  // --- Šuplík detailu (vaul) ---
-  function DetailSheet({ open, onOpenChange, t, isLoading }: { open: boolean; onOpenChange: (o: boolean) => void; t?: Tender; isLoading: boolean }) {
-    return (
-      <Drawer.Root open={open} onOpenChange={onOpenChange} direction="right">
-        <Drawer.Overlay className="fixed inset-0 bg-black/40 z-40" />
-        <Drawer.Content className="fixed z-50 top-0 right-0 h-full w-[96%] md:w-[720px] bg-white dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 overflow-auto">
-          <div className="p-5">
-            {isLoading && (
-              <div className="flex items-center text-slate-500">
-                <Loader2 className="h-5 w-5 mr-2 animate-spin" /> Načítám detail…
-              </div>
-            )}
-            {!isLoading && t && (
-              <>
-                <h2 className="text-xl font-semibold leading-tight mb-1">{t.title}</h2>
-                <div className="text-sm text-slate-600 dark:text-slate-400 mb-4">{t.buyer}</div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm mb-6">
-                  <div>
-                    <span className="text-slate-500">Status:</span> {t.detail?.status || "—"}
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Region:</span> {t.detail?.region || "—"}
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Země:</span> {t.country || "—"}
-                  </div>
-                  <div>
-                    <span className="text-slate-500">CPV:</span> {(t.detail?.cpv || []).join(", ") || "—"}
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Rozpočet:</span> {formatCZK(t.detail?.budget_value ?? null)}
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Deadline:</span> {t.deadline || "—"}
-                  </div>
-                  <div className="col-span-2">
-                    <span className="text-slate-500">ID:</span> {t.external_id}
-                  </div>
-                </div>
-
-                <div className="prose prose-sm dark:prose-invert mb-6 max-w-none">
-                  <h3>Popis</h3>
-                  <p>{t.detail?.description || "—"}</p>
-                </div>
-
-                <div className="mb-6">
-                  <h3 className="font-semibold mb-2">Přílohy</h3>
-                  <ul className="space-y-1">
-                    {(t.detail?.attachments || []).length > 0 ? (
-                      (t.detail!.attachments!).map((a, i) => (
-                        <li key={i}>
-                          <a className="inline-flex items-center text-blue-600 hover:underline" href={a.url} target="_blank" rel="noreferrer">
-                            <FileText className="h-4 w-4 mr-2" /> {a.name}
-                          </a>
-                        </li>
-                      ))
-                    ) : (
-                      <li className="text-sm text-slate-500">Žádné přílohy</li>
-                    )}
-                  </ul>
-                </div>
-
-                {t.notice_url && (
-                  <a
-                    href={t.notice_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center rounded-md border border-slate-300 dark:border-slate-700 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-                  >
-                    <ExternalLink className="h-4 w-4 mr-2" /> Otevřít zdroj
-                  </a>
-                )}
-              </>
-            )}
-          </div>
-        </Drawer.Content>
-      </Drawer.Root>
-    );
-  }
 }
-
-export default TendersPage;

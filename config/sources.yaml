@@ -1,0 +1,12 @@
+sources:
+  nen:
+    enabled: true
+    start_url: "https://nen.nipez.cz/verejne-zakazky"
+    max_pages: 45
+    max_detail_per_run: 2000       # pro ladění rychlosti; můžeš vrátit na 150
+    detail_log_every: 5
+    delay_min: 0.4
+    delay_max: 0.8
+    detail_delay_min: 0.15       # rychlejší detail fetch
+    detail_delay_max: 0.35
+    user_agent: "vz-aggregator/0.1 (+contact@example.com)"
